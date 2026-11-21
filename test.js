@@ -1,0 +1,50 @@
+// Pruebas: TEST_DATABASE_URL=postgres://... node test.js  (usa una base VACÍA de pruebas; borra sus datos)
+process.env.DATABASE_URL = process.env.TEST_DATABASE_URL; process.env.ADMIN_PASSWORD = 'Admin12345'; process.env.AUTH_LIMIT = '1000';
+const { q } = require('./db');
+const app = require('./server'); let srv, B;
+const C = () => { let cookie = '', csrf = ''; return { async r(m, p, b, form) {
+  const h = { cookie }; if (m !== 'GET') h['x-csrf-token'] = csrf; let body; if (form) body = form; else if (b) { h['content-type'] = 'application/json'; body = JSON.stringify(b); }
+  const res = await fetch(B + p, { method: m, headers: h, body }); const sc = res.headers.getSetCookie(); if (sc.length) cookie = sc.map(c => c.split(';')[0]).join('; ');
+  const j = await res.json().catch(() => ({})); if (j.csrf) csrf = j.csrf; return { s: res.status, j }; } }; };
+let fail = 0; const t = (n, got, want) => { const ok = got === want; if (!ok) fail++; console.log((ok ? '✔' : '✘') + ' ' + n + (ok ? '' : ` (obtuvo ${got}, esperaba ${want})`)); };
+(async () => {
+  await app.ready; await q('TRUNCATE users,orders,resets,sessions RESTART IDENTITY CASCADE'); await app.seed();
+  srv = app.listen(0); B = 'http://localhost:' + srv.address().port;
+  const a = C(), c = C(), c2 = C(), tech = C(), anon = C();
+  t('anónimo no ve pedidos', (await anon.r('GET', '/api/orders')).s, 401);
+  await anon.r('GET', '/api/me'); await anon.r('GET', '/api/me');
+  const noCsrf = await fetch(B + '/api/auth/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+  t('POST sin CSRF rechazado', noCsrf.status, 403);
+  await c.r('GET', '/api/me');
+  t('registro con clave débil', (await c.r('POST', '/api/auth/register', { name: 'Ana', email: 'ana@x.com', password: 'abc' })).s, 400);
+  t('registro válido', (await c.r('POST', '/api/auth/register', { name: 'Ana', email: 'ana@x.com', password: 'Clave1234', role: 'admin' })).s, 201);
+  t('rol forzado a cliente', (await c.r('GET', '/api/me')).j.user.role, 'client');
+  t('correo duplicado', (await anon.r('POST', '/api/auth/register', { name: 'Ana', email: 'ANA@x.com', password: 'Clave1234' })).s, 409);
+  t('cliente no ve usuarios (RBAC)', (await c.r('GET', '/api/users')).s, 403);
+  const png = Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex');
+  const mk = (buf, name) => { const f = new FormData(); f.set('device', 'Celular'); f.set('brand', 'Samsung A54'); f.set('issue', 'La pantalla no enciende'); if (buf) f.set('photo', new Blob([buf]), name); return f; };
+  t('archivo falso (.png con texto)', (await c.r('POST', '/api/orders', null, mk(Buffer.from('<script>alert(1)</script>'), 'x.png'))).s, 400);
+  const o = await c.r('POST', '/api/orders', null, mk(png, 'x.png')); t('crear pedido con foto', o.s, 201);
+  t('SQLi en login', (await anon.r('POST', '/api/auth/login', { email: "' OR 1=1 --", password: 'x' })).s, 401);
+  await a.r('GET', '/api/me'); t('login admin', (await a.r('POST', '/api/auth/login', { email: 'admin@kraletech.local', password: 'Admin12345' })).s, 200);
+  await c2.r('GET', '/api/me'); await c2.r('POST', '/api/auth/register', { name: 'Beto', email: 'beto@x.com', password: 'Clave1234' });
+  t('otro cliente no ve pedido ajeno', (await c2.r('GET', '/api/orders')).j.orders.length, 0);
+  t('otro cliente no ve foto ajena', (await c2.r('GET', `/api/orders/${o.j.id}/photo`)).s, 404);
+  const users = (await a.r('GET', '/api/users')).j.users, beto = users.find(u => u.email === 'beto@x.com');
+  t('admin cambia rol a técnico', (await a.r('PATCH', '/api/users/' + beto.id, { role: 'tech' })).s, 200);
+  t('admin no se edita a sí mismo', (await a.r('PATCH', '/api/users/1', { active: 0 })).s, 403);
+  await tech.r('GET', '/api/me'); await tech.r('POST', '/api/auth/login', { email: 'beto@x.com', password: 'Clave1234' });
+  t('técnico sin asignación no ve nada', (await tech.r('GET', '/api/orders')).j.orders.length, 0);
+  t('técnico no asigna', (await tech.r('PATCH', '/api/orders/' + o.j.id, { tech_id: beto.id })).s, 404);
+  t('admin asigna técnico', (await a.r('PATCH', '/api/orders/' + o.j.id, { tech_id: beto.id, status: 'diagnostico' })).s, 200);
+  t('técnico actualiza estado', (await tech.r('PATCH', '/api/orders/' + o.j.id, { status: 'reparacion', notes: 'Cambio de pantalla' })).s, 200);
+  t('cliente no cancela en curso', (await c.r('PATCH', '/api/orders/' + o.j.id, { status: 'cancelado' })).s, 403);
+  t('cliente ve notas actualizadas', (await c.r('GET', '/api/orders')).j.orders[0].notes, 'Cambio de pantalla');
+  const bad = C(); await bad.r('GET', '/api/me'); let last;
+  for (let i = 0; i < 6; i++) last = await bad.r('POST', '/api/auth/login', { email: 'ana@x.com', password: 'mala' + i });
+  t('bloqueo tras 5 intentos fallidos', last.s, 429);
+  t('cambio de clave exige la actual', (await a.r('POST', '/api/auth/change-password', { current: 'mala', password: 'Nueva12345' })).s, 400);
+  t('logout', (await a.r('POST', '/api/auth/logout')).s, 200);
+  t('tras logout no hay acceso', (await a.r('GET', '/api/orders')).s, 401);
+  console.log(fail ? `\n${fail} prueba(s) fallaron` : '\nTodas las pruebas pasaron'); srv.close(); process.exit(fail ? 1 : 0);
+})();

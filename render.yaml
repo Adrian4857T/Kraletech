@@ -1,0 +1,22 @@
+# Despliegue en Render: New → Blueprint → elige tu repositorio de GitHub
+services:
+  - type: web
+    name: kraletech
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: DATABASE_URL      # cadena de conexión de Neon
+        sync: false
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: APP_URL           # la URL que Render te asigne (https://...onrender.com)
+        sync: false
