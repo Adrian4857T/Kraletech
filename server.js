@@ -45,7 +45,9 @@ app.get('/healthz', (req, res) => res.type('text').send('ok')); // para el monit
 app.use(express.json({ limit: '20kb' }));
 app.use(session({ name: 'sid', secret: SECRET, store: new PgStore(), resave: false, saveUninitialized: false, rolling: true,
   cookie: { httpOnly: true, sameSite: 'lax', secure: PROD, maxAge: 2 * 3600e3 } }));
-app.use(express.static(path.join(__dirname, 'public'), { maxAge: PROD ? '1h' : 0 }));
+// Archivos del sitio (lista cerrada: nunca se expone server.js, package.json ni el resto del proyecto)
+const WEB = { '/': 'index.html', '/index.html': 'index.html', '/app.js': 'app.js', '/styles.css': 'styles.css', '/bootstrap.min.css': 'bootstrap.min.css' };
+app.get(Object.keys(WEB), (req, res) => res.sendFile(WEB[req.path], { root: __dirname, maxAge: PROD ? '1h' : 0 }));
 app.use('/api', rate({ windowMs: 15 * 60e3, limit: 600, standardHeaders: true, legacyHeaders: false,
   message: { error: 'Demasiadas solicitudes. Espera unos minutos e inténtalo de nuevo.' } }));
 const authLimit = rate({ windowMs: 15 * 60e3, limit: +process.env.AUTH_LIMIT || 20, standardHeaders: true, legacyHeaders: false,
